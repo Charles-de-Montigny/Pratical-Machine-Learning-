@@ -1,0 +1,213 @@
+---
+title: "Practical Machine Learning Course Project"
+author: "Charles Demontigny"
+date: "December 27, 2015"
+output: 
+  html_document: 
+    theme: united
+---
+<br>
+<br>
+
+# Introduction
+
+Using devices such as Jawbone Up, Nike FuelBand, and Fitbit it is now possible to collect a large amount of data about personal activity relatively inexpensively. These type of devices are part of the quantified self movement – a group of enthusiasts who take measurements about themselves regularly to improve their health, to find patterns in their behavior, or because they are tech geeks. One thing that people regularly do is quantify how much of a particular activity they do, but they rarely quantify how well they do it. In this project, your goal will be to use data from accelerometers on the belt, forearm, arm, and dumbell of 6 participants. They were asked to perform barbell lifts correctly and incorrectly in 5 different ways. More information is available from the website here: http://groupware.les.inf.puc-rio.br/har (see the section on the Weight Lifting Exercise Dataset). 
+<br>
+<br>
+
+# Reproduceablity
+In order to reproduce the same results, you need a certain set of packages, as well as setting a pseudo random seed equal to the one I used.
+
+```{r, include=FALSE}
+# Load the packages ------------------------------------------------------------
+
+require(caret)
+require(kernlab)
+require(ggplot2)
+require(ISLR)
+require(Hmisc)
+require(splines)
+require(dplyr)
+require(neuralnet)
+require(randomForest)
+```
+<br>
+<br>
+# Getting and cleaning the data
+```{r}
+# Load the data ----------------------------------------------------------------
+pmlData <- read.csv("raw/pml-training.csv")
+
+# Data Cleaning ----------------------------------------------------------------
+
+# remove nzv variables
+
+nsv <- nearZeroVar(pmlData, saveMetrics=T)
+nzv <- !nsv$nzv
+
+pmlData <- pmlData[,nzv]
+
+# remove columns with NAs
+x <- c()
+for(i in 1:ncol(pmlData)){
+    x[i] <- sum(is.na(pmlData[,i]))
+}
+
+NAcol <- which(x > 0)
+pml <- pmlData[,-NAcol]
+```
+<br>
+<br>
+# Splitting Data into training and testing set
+
+In order to test my model on different data that the one that be training on too, I 
+am splitting my dataset into a training and a testset.
+
+```{r}
+inTrain <- createDataPartition(y = pml$classe, p = 0.7, list = FALSE)
+training <- pml[inTrain,];testing <- pml[-inTrain,]
+```
+<br>
+<br>
+
+# Machine Learning Algorithm #1: KNN
+
+In pattern recognition, the k-Nearest Neighbors algorithm (or k-NN for short) is a non-parametric method used for classification and regression.In both cases, the input consists of the k closest training examples in the feature space.
+
+The first step to do is to scale or normalized our data. We want to do this since knn considers Euclidean distance to be
+meaningful. 
+
+```{r , include=T}
+training <- training[,-1]
+trainingScale <- scale(training[,-c(1,4,ncol(training))])
+trainingKnn <- cbind(trainingScale, training$classe)
+
+testing <- testing[,-1]
+testingScale <- scale(testing[,-c(1,4,ncol(testing))])
+testingKnn <- cbind(testingScale, testing$classe)
+```
+
+The next step is fitting the knn model.
+
+```{r, include=T}
+set.seed(400)
+knnFit <- class::knn(train = trainingKnn[,1:(ncol(trainingKnn)-1)], 
+              test = testingKnn[,1:(ncol(testingKnn)-1)], 
+              cl = trainingKnn[,ncol(trainingKnn)], k = 3)
+
+confusionMatrix(knnFit, testingKnn[,ncol(testingKnn)])
+mean(knnFit == testingKnn[,ncol(testingKnn)])
+table(knnFit, testingKnn[,ncol(testingKnn)])
+```
+
+We can see that the KNN algorith is quiet good since it has a prediction accuracy of 0.953.
+We are going to try a few others algorith to see if we can improve it.
+
+<br>
+<br>
+
+# Machine Learning Algorithm #2 : Neural Network
+
+In machine learning and cognitive science, artificial neural networks (ANNs) are a family of models inspired by biological neural networks (the central nervous systems of animals, in particular the brain) and are used to estimate or approximate functions that can depend on a large number of inputs and are generally unknown. Artificial neural networks are generally presented as systems of interconnected "neurons" which exchange messages between each other. The connections have numeric weights that can be tuned based on experience, making neural nets adaptive to inputs and capable of learning.
+
+We are going to use the scaled data.
+
+```{r , include=T}
+trainingNN <- as.data.frame(trainingKnn)
+testingNN <- as.data.frame(testingKnn)
+```
+
+After a few try to fit the neural network with all of remaining variables, neither Rprop or
+backpropagation algorithm converge. That can be dut to the fact that there is not enough variation
+in how data. We will try to create principal component analysis and only keep variables causing variation.
+
+```{r, include=T}
+yTrain <- as.data.frame(trainingNN[,"V56"])
+pcaTrain <- prcomp(trainingNN[,-ncol(trainingNN)])
+pcaTesting <- prcomp(testingNN[,-ncol(testingNN)])
+plot(pcaTrain, type = "l")
+```
+
+I will only keep the first 7 components. Principal component analysis also perform a dimension reduction since 
+we add more than 50 variables and now we only keep 20 of them.
+
+```{r, include=T}
+trainingANN <- as.data.frame(pcaTrain$x[,1:20])
+trainingANN$y <- data.frame("y" = yTrain)
+testingANN <- as.data.frame(pcaTesting$x[,1:20])
+
+n <- names(trainingANN)
+f <- as.formula(paste("A+B+C+D+E~", paste(n[!n %in% "y"], collapse = " + ")))
+
+# Binarize the categorical output
+
+trainingANN <- cbind(trainingANN, trainingANN$y == 1)
+trainingANN <- cbind(trainingANN, trainingANN$y == 2)
+trainingANN <- cbind(trainingANN, trainingANN$y == 3)
+trainingANN <- cbind(trainingANN, trainingANN$y == 4)
+trainingANN <- cbind(trainingANN, trainingANN$y == 5)
+
+names(trainingANN)[22] <- "A"
+names(trainingANN)[23] <- "B"
+names(trainingANN)[24] <- "C"
+names(trainingANN)[25] <- "D"
+names(trainingANN)[26] <- "E"
+
+trainingANN <- trainingANN[,-21]
+
+# Fit the model
+
+nn <-  neuralnet(f,
+               data = trainingANN, hidden = 2,
+               err.fct = "sse", linear.output = F)
+
+# Predict
+pred.nn <- compute(nn, testingANN)$net.result
+
+predann <- c()
+
+for(i in 1:nrow(pred.nn)){
+    predann[i] <- which.max(pred.nn[i,])[[1]]
+}
+
+testingNN$pred <- predann
+
+# Table
+confusionMatrix(predann, testingNN$V56)
+mean(predann == testingNN$V56)
+```
+
+As you can see the result is not good. It's possibly because of bad specification of the data.
+
+
+# Machine Learning Algorithm #3: Random Forest
+
+Random forests is a notion of the general technique of random decision forests that are an ensemble learning method for classification, regression and other tasks, that operate by constructing a multitude of decision trees at training time and outputting the class that is the mode of the classes (classification) or mean prediction (regression) of the individual trees. Random decision forests correct for decision trees' habit of overfitting to their training set.
+
+```{r setup, include=T}
+knitr::opts_chunk$set(cache=TRUE)
+# Random Forest ----------------------------------------------------------------
+set.seed(1)
+modelFit <- randomForest(as.factor(classe)~., data=training, importance = TRUE, mtry = 15, ntree = 250)
+
+# Predict
+pred <- predict(modelFit, testing[,-c(58)])
+testing$predRight <- pred==testing$classe
+mean(pred == testing$classe)
+table(pred, testing$classe)
+```
+
+Random forest predict perfectly the testing set. It's the best model for that dataset.
+
+<br>
+<br>
+<br>
+
+
+
+
+
+
+
+
+
